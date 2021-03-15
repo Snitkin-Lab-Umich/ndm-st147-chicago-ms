@@ -1,0 +1,1172 @@
+---
+title: "Manuscript figures"
+author: "Zena Lapp"
+date: "12/16/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(ape)
+library(pheatmap)
+library(ggtree)
+library(igraph)
+library(ggplotify)
+library(cowplot)
+library(ggnewscale)
+library(BactDating)
+library(coda)
+library(lubridate)
+library(tidytree)
+library(treeio)
+library(snitkitr)
+
+# set plot theme
+theme_set(theme_bw() + theme(#axis.text.x = element_text(angle=90,vjust = 0.5, hjust = 1),
+  strip.background = element_rect(fill="white",linetype='blank'), text=element_text(size=15)))
+
+# data for figure 1
+dat_vl <- read_csv('../data/REALM_all_data_deidentified_Jan_2020/realm.REALM_LTACH_vSNF_noPHI_1_30_2021.CSV', 
+                   col_types = 'cccccccccccccccccccc')
+names(dat_vl) <- tolower(names(dat_vl))
+dat_i <- read_csv('../data/REALM_all_data_deidentified_Jan_2020/realm.REALM_MICUs_noPHI_1_30_2021.CSV', 
+                   col_types = 'cccccccccccccccccccc')
+names(dat_i) <- tolower(names(dat_i))
+
+# create unique patient and facility ids
+dat_vl$pt_id <- paste(dat_vl$factype, dat_vl$facility, dat_vl$survey, dat_vl$patient, sep = '_')
+dat_vl$f_id <- paste(dat_vl$facility,dat_vl$factype,sep='_')
+dat_vl$f_id <- sapply(dat_vl$f_id, function(x) ifelse(x == 'NA_NA',NA,x))
+
+dat_i$pt_id <- paste(dat_i$factype, dat_i$facility, dat_i$survey, dat_i$patient, sep = '_')
+dat_i$f_id <- paste(dat_i$facility,dat_i$factype,sep='_')
+dat_i$f_id <- sapply(dat_i$f_id, function(x) ifelse(x == 'NA_NA',NA,x))
+
+# filter out non-vent floors in vsnfs because these were inconsistently surveyed
+dat_vl <- dat_vl %>% filter(!(factype == 'vsnf' & ward != 'vent'))
+
+# combine datasets
+dat <- bind_rows(dat_vl, dat_i)
+
+# read in data & remove isolates without a carbapenemase
+metadat_all <- read_tsv('../2020-12-16_genome-qc/data/all_genomes_metadat.tsv') %>% filter(!is.na(bla))
+plasmid_metadat <- read_tsv('../2020-12-16_genome-qc/data/plasmid_metadat.tsv') %>% filter(!is.na(bla))
+plasmid_pres_abs <- read.delim('data/2021_02_18_IncF_plasmid_presence.tsv', '\t', skip = 1, header = F)
+metadat <- read_tsv('../2020-12-16_genome-qc/data/st147_metadat.tsv')
+tr <- read.tree('../2020-12-16_genome-qc/data/st147.tree')
+
+plasmid_metadat$IncF_plasmid <- unlist(sapply(plasmid_metadat$gID, function(x){
+  if(x %in% plasmid_pres_abs$V1){
+    pa <- plasmid_pres_abs[plasmid_pres_abs$V1 == x,2]
+    if(pa == 1) pa <- 1 #'IncF plasmid'
+    else pa <- 0 #' '
+  }else{
+    pa <- NA
+  }
+  pa
+}))
+
+metadat$IncF_plasmid <- unlist(sapply(metadat$gID, function(x){
+  if(x %in% plasmid_pres_abs$V1){
+    pa <- plasmid_pres_abs[plasmid_pres_abs$V1 == x,2]
+    if(pa == 1) pa <- 'IncF plasmid'
+    else pa <- ' '
+  }else{
+    pa <- NA
+  }
+  pa
+}))
+
+ec_sts <- read_tsv('../../../Sequence_data/Reports/2021_01_28_Ariba_MLST_Ecoli/2021_01_28_Ariba_MLST_Ecoli.tsv') %>% rename(gID = X1) %>% mutate(gID = gsub('./','',gID)) %>% select(gID, ST)
+
+plasmid_metadat$ec_st <- sapply(plasmid_metadat$gID, function(x){
+  ecst <- ec_sts$ST[ec_sts$gID == x]
+  ifelse(length(ecst) == 0, NA, ecst)
+})
+
+dna <- read.dna('../../../Sequence_data/output_files/2020_12_09_variant_calling_ST147/2020_12_11_12_49_38_core_results/gubbins/2020_12_11_12_49_38_Kp46596_genome_aln_w_alt_allele_unmapped.filtered_polymorphic_sites.fasta',format='fasta')
+rownames(dna) <- gsub('_$','',rownames(dna))
+
+load('../2020-11-13_pt-transf-ksp/2020-11-13_graph.RData')
+load('../2020-11-13_pt-transf-ksp/2020-11-13_ksp100.RData')
+
+# just ndm clade
+fpaths_ndm <- list.files('../2020-12-15_st147-dated-tree/results','_ndm_', full.names = T)
+fpaths_ndm <- fpaths_ndm[!grepl('relative',fpaths_ndm)]
+clocks <- gsub('../2020-12-15_st147-dated-tree/results/dated_tree_ndm_|_1e\\+06.RData','',fpaths_ndm)
+for(i in 1:length(fpaths_ndm)){
+  assign(clocks[i], get(load(fpaths_ndm[i])))
+}
+
+# all realm st147
+fpaths_realm <- list.files('../2020-12-15_st147-dated-tree/results','_st147_', full.names = T)
+clocks_realm <- paste0(gsub('../2020-12-15_st147-dated-tree/results/dated_tree_st147_|_1e\\+06.RData','',fpaths_realm),'_st147')
+for(i in 1:length(fpaths_realm)){
+  assign(clocks_realm[i], get(load(fpaths_realm[i])))
+}
+```
+
+```{r}
+# Remove isolates from vSNF O and vSNF P because they didn't participate in all surveys
+dat <- dat %>% filter(!f_id %in% c('P_vsnf'))
+metadat_all <- metadat_all %>% filter(!f_id %in% c('P_vsnf'))
+plasmid_metadat <- plasmid_metadat %>% filter(!f_id %in% c('P_vsnf'))
+metadat <- metadat %>% filter(!f_id %in% c('P_vsnf'))
+```
+
+
+```{r}
+plasmid_metadat %>% filter(ST == 147) %>% select(gID, pt_id, f_id, survey, survey_year) %>% write_csv('data/kp_st147_metadata.csv')
+```
+
+Remove duplicate patient/ST combos from all data.
+
+```{r}
+# metadat_all, plasmid_metadat, metadat, tr, dna, mixedarc
+
+# get days between surveys
+realm_day <- bind_rows(metadat %>% filter(realm=='REALM' & bla != 'None') %>% group_by(f_id,survey,REALM_day) %>%
+            select(gID, f_id,survey,REALM_day),
+          metadat_all %>% filter(bla != 'None') %>% group_by(f_id,survey,REALM_day) %>%
+            select(gID, f_id,survey,REALM_day),
+          plasmid_metadat %>% filter(bla != 'None') %>% group_by(f_id,survey,REALM_day) %>%
+            select(gID, f_id,survey,REALM_day)) %>% filter(!is.na(f_id))
+realm_day <- realm_day[!duplicated(realm_day),]
+realm_day <- realm_day %>% summarize(count=n())
+realm_day$diff <- realm_day$REALM_day - lag(realm_day$REALM_day)
+realm_day$diff[!duplicated(realm_day$f_id)] <- NA
+
+get_dups <- function(df){
+  df_sub <- df %>% select(pt_id, species, ST) 
+  dups_same_survey <- duplicated(df_sub) & !is.na(df_sub$pt_id)
+  long_los <- sapply(1:nrow(df), function(x){
+    f_id <- df$f_id[x]
+    survey <- df$survey[x]
+    f_day <- df$facility_day[x]
+    sp <- df$species[x]
+    st <- df$ST[x]
+    if(is.na(survey)) return(FALSE)
+    max_fday <- realm_day$diff[realm_day$f_id == f_id & realm_day$survey == survey]
+    long_los <- FALSE
+    if(!is.na(max_fday)){
+      if(f_day >= max_fday){ 
+        long_los <- TRUE
+      }
+    }
+    long_los
+  })
+  df_sub2 <- df %>% select(species, ST)
+  dups_diff_survey <- long_los & duplicated(df_sub2)
+  dups_same_survey | dups_diff_survey
+}
+
+get_dups_fig1 <- function(df){
+  df_sub <- df %>% 
+    filter(survey %in% c(13,301,302,303)) %>% 
+    dplyr::select(survey, f_id, pt_id, facility_day)#, species, ST)
+  dups_same_survey <- duplicated(df_sub) & !is.na(df_sub$pt_id)
+  long_los <- sapply(1:nrow(df_sub), function(x){
+    f_id <- df$f_id[x]
+    survey <- df_sub$survey[x]
+    f_day <- df_sub$facility_day[x]
+    if(is.na(survey)) return(FALSE)
+    max_fday <- realm_day$diff[realm_day$f_id == f_id & realm_day$survey == survey]
+    if(length(max_fday) == 0) max_fday <- NA
+    long_los <- FALSE
+    if(is.na(f_day)) return(TRUE) # remove ones where we don't know how long they've been around
+    if(!is.na(max_fday)){
+      if(length(max_fday) > 1) print(max_fday)
+      if(f_day >= max_fday){ 
+        long_los <- TRUE
+      }
+    }
+    long_los
+  })
+  # df_sub2 <- df %>% select(species, ST)
+  dups_diff_survey <- long_los #& duplicated(df_sub2)
+  dups_same_survey | dups_diff_survey
+}
+
+# data for figure 1
+dat <- dat %>% filter(survey %in% c(13,301,302,303)) %>% filter(!get_dups_fig1(dat)) %>% 
+  mutate(survey = ifelse(survey == '301', '13-1', survey),
+         survey = ifelse(survey == '302', '13-2', survey),
+         survey = ifelse(survey == '303', '13-3', survey))
+
+# metadat_all
+metadat_all <- metadat_all %>% filter(!get_dups(metadat_all)) %>% 
+  mutate(survey = ifelse(survey == '301', '13-1', survey),
+         survey = ifelse(survey == '302', '13-2', survey),
+         survey = ifelse(survey == '303', '13-3', survey))
+
+# plasmid_metadat
+plasmid_metadat <- plasmid_metadat %>% filter(!get_dups(plasmid_metadat)) %>% 
+  mutate(survey = ifelse(survey == '301', '13-1', survey),
+         survey = ifelse(survey == '302', '13-2', survey),
+         survey = ifelse(survey == '303', '13-3', survey))
+
+# metadat
+metadat <- metadat %>% filter(!get_dups(metadat)) %>% 
+  mutate(survey = ifelse(survey == '301', '13-1', survey),
+         survey = ifelse(survey == '302', '13-2', survey),
+         survey = ifelse(survey == '303', '13-3', survey))
+
+nodup_gids <- metadat$gID
+
+# dna
+dna_realm <- dna[rownames(dna) %in% nodup_gids,]
+
+tr <- drop.tip(tr, tr$tip.label[!tr$tip.label %in% nodup_gids])
+```
+
+```{r}
+# colors
+bla_cols <- c(NDM="dodgerblue3", 'NDM-1'="dodgerblue3", KPC="darkgrey",'None'='palegoldenrod','NDM &\nKPC'='violetred','NDM & KPC'='violetred')
+bla_cols_transparent <- c('NDM & KPC'=adjustcolor('violetred',alpha.f = 0.5),'None'=adjustcolor('palegoldenrod',alpha.f = 0.5),"NDM"=adjustcolor("dodgerblue3",alpha.f = 0.5), "KPC"=adjustcolor("darkgrey",alpha.f = 0.5))
+
+l_cols <- c('#e6beff', '#e6194b', '#3cb44b', '#4363d8', '#911eb4', '#f032e6', '#ffe119', '#bcf60c', '#fabebe', '#008080', '#808000', '#9a6324', '#800000', '#aaffc3', '#ffd8b1', '#000075', '#808080', '#fffac8','#46f0f0','#f58231')
+names(l_cols) <- c(rev(sort(unique(dat$f_id[dat$factype != 'icu']))),'Y_icu')
+l_cols <- l_cols[!is.na(names(l_cols))]
+names(l_cols) <- gsub('_.*','',names(l_cols))
+
+cols <- c(`Australia and New Zealand` = "#e6194b", `Eastern Asia` = "#3cb44b", 
+`Eastern Europe` = "#ffe119", `Latin America and the Caribbean` = "#4363d8", 
+`Northern Africa` = "#f58231", `Northern America` = "#911eb4", 
+`Northern Europe` = "#46f0f0", `South-eastern Asia` = "#f032e6", 
+`Southern Asia` = "#bcf60c", `Southern Europe` = "#fabebe", `Sub-Saharan Africa` = "#008080", 
+`Western Asia` = "#e6beff", `Western Europe` = "#9a6324", `Chicago area`="#800000", Absent='white',"NDM_1"="dodgerblue3",'NDM_4'='lightblue','NDM_5'='springgreen','NDM_7'='skyblue',"KPC_2"='lightgrey', "KPC_3"="darkgrey",Present='black','2016'='tan1','2017'='#bdc9e1','2018'='#67a9cf','2019'='#02818a', '13'='tan1','13-1'='#bdc9e1','13-2'='#67a9cf','13-3'='#02818a',NDM="dodgerblue3", KPC="darkgrey", 'IncF plasmid'='black',' '='white',l_cols)
+```
+
+```{r}
+# grob plotting function to plot panel colors
+plot_panel_cols <- function(p, fills){
+  gt <- ggplot_gtable(ggplot_build(p))
+  strip_both <- which(grepl('strip-', gt$layout$name))
+  k <- 1
+  for (i in strip_both) {
+    j <- which(grepl('rect', gt$grobs[[i]]$grobs[[1]]$childrenOrder))
+    gt$grobs[[i]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+    k <- k+1
+  }
+  as.ggplot(gt)
+}
+```
+
+# Table 1: Overview of data
+
+```{r}
+dat <- dat %>% 
+  mutate(bla = paste0(ifelse(kpc == 'yes' & ndm != 'yes' & !is.na(ndm),'KPC',''),
+                      ifelse(ndm == 'yes' & kpc != 'yes' & !is.na(ndm), 'NDM', ''),
+                      ifelse(ndm == 'yes' & kpc == 'yes' & !is.na(ndm),'NDM & KPC','')),
+         survey = ifelse(survey == '301', '13-1', survey),
+         survey = ifelse(survey == '302', '13-2', survey),
+         survey = ifelse(survey == '303', '13-3', survey),
+         survey = as.factor(survey))
+
+# all
+summary_all <- dat %>% #group_by(factype) %>% 
+  mutate(age_phi = as.numeric(age_phi),
+         facility_day = as.numeric(facility_day)) %>% 
+  summarize(
+    'Number of facilities' = sum(!duplicated(f_id)),
+    'Age, mean yrs (SD)' = paste0(
+      round(mean(age_phi, na.rm = TRUE),0), ' (',
+      round(sd(age_phi, na.rm = TRUE),0), ')'),
+    'Male, n (%)' = paste0(
+      sum(male == 'yes', na.rm = TRUE), ' (',
+      100*round(mean(male == 'yes', na.rm = TRUE),2), ')'),
+    'Length of stay, median days (IQR)' = paste0(
+      round(median(facility_day, na.rm = TRUE),0), ' (',
+      round(quantile(facility_day, probs = 0.25, na.rm = TRUE),0),  '-',
+      round(quantile(facility_day, probs = 0.75, na.rm = TRUE),0), ')'),
+    # confused about the vent column
+    'Mechanical ventilation, n (%)' = paste0(
+      sum(vent == 'yes' | vent == 'vent', na.rm = TRUE), ' (',
+      100*round(mean(vent == 'yes' | vent == 'vent', na.rm = TRUE),2), ')'),
+    'Tracheostomy collar, n (%)' = paste0(
+      sum(vent == 'trach', na.rm = TRUE),' (',
+      100*round(mean(vent == 'trach', na.rm = TRUE),2), ')'),
+    'Contact precautions, n (%)' = paste0(
+      sum(iso == 'yes', na.rm = TRUE), ' (',
+      100*round(mean(iso == 'yes', na.rm = TRUE),2), ')'),
+    'KPC, n (%)' = paste0(
+      sum(kpc == 'yes', na.rm = TRUE), ' (',
+      100*round(mean(kpc == 'yes', na.rm = TRUE),2), ')'),
+    'NDM, n (%)' = paste0(
+      sum(ndm == 'yes', na.rm = TRUE), ' (',
+      100*round(mean(ndm == 'yes', na.rm = TRUE),2), ')'),
+    'OXA-48, n (%)' = paste0(
+      sum(oxa48 == 'yes', na.rm = TRUE), ' (',
+      100*round(mean(oxa48 == 'yes', na.rm = TRUE),2), ')'),
+    'IMP, n (%)' = paste0(
+      sum(imp == 'yes', na.rm = TRUE), ' (',
+      100*round(mean(imp == 'yes', na.rm = TRUE),2), ')'),
+    'VIM, n (%)' = paste0(
+      sum(vim == 'yes', na.rm = TRUE), ' (',
+      100*round(mean(vim == 'yes', na.rm = TRUE),2), ')'),
+    'Any carbapenemase gene, n (%)' = paste0(
+      sum(kpc == 'yes' | ndm == 'yes' | oxa48 == 'yes' | imp == 'yes' | vim == 'yes', na.rm = TRUE), ' (',
+      100*round(mean(kpc == 'yes' | ndm == 'yes' | oxa48 == 'yes' | imp == 'yes' | vim == 'yes', na.rm = TRUE),2), ')'),
+    'Carbapenemase-positive with contact precautions, n/N (%)' = paste0(
+      sum((kpc == 'yes' | ndm == 'yes' | oxa48 == 'yes' | imp == 'yes' | vim == 'yes') & 
+            iso == 'yes', na.rm = TRUE), '/', 
+      sum(kpc == 'yes' | ndm == 'yes' | oxa48 == 'yes' | imp == 'yes' | vim == 'yes', na.rm = TRUE), ' (',
+      100*round(sum((kpc == 'yes' | ndm == 'yes' | oxa48 == 'yes' | imp == 'yes' | vim == 'yes') & 
+            iso == 'yes', na.rm = TRUE) /
+                  sum(kpc == 'yes' | ndm == 'yes' | oxa48 == 'yes' | imp == 'yes' | vim == 'yes', na.rm = TRUE) 
+                       ,2), ')'),
+    'Carbapenemase-positive known to facility, n/N (%)' = paste0(
+      sum((kpc == 'yes' | ndm == 'yes' | oxa48 == 'yes' | imp == 'yes' | vim == 'yes') & 
+                known_cre == 'yes', na.rm = TRUE), '/', 
+      sum(kpc == 'yes' | ndm == 'yes' | oxa48 == 'yes' | imp == 'yes' | vim == 'yes', na.rm = TRUE), ' (',
+      100*round(sum((kpc == 'yes' | ndm == 'yes' | oxa48 == 'yes' | imp == 'yes' | vim == 'yes') & 
+            known_cre == 'yes', na.rm = TRUE) / 
+                  sum(kpc == 'yes' | ndm == 'yes' | oxa48 == 'yes' | imp == 'yes' | vim == 'yes', na.rm = TRUE) 
+                       ,2), ')')
+  )
+
+# by facil
+summary_facil <- dat %>% group_by(factype) %>% 
+  mutate(age_phi = as.numeric(age_phi),
+         facility_day = as.numeric(facility_day)) %>% 
+  summarize(
+    'Number of facilities' = sum(!duplicated(f_id)),
+    'Age, mean yrs (SD)' = paste0(
+      round(mean(age_phi, na.rm = TRUE),0), ' (',
+      round(sd(age_phi, na.rm = TRUE),0), ')'),
+    'Male, n (%)' = paste0(
+      sum(male == 'yes', na.rm = TRUE), ' (',
+      100*round(mean(male == 'yes', na.rm = TRUE),2), ')'),
+    'Length of stay, median days (IQR)' = paste0(
+      round(median(facility_day, na.rm = TRUE),0), ' (',
+      round(quantile(facility_day, probs = 0.25, na.rm = TRUE),0),  '-',
+      round(quantile(facility_day, probs = 0.75, na.rm = TRUE),0), ')'),
+    # confused about the vent column
+    'Mechanical ventilation, n (%)' = paste0(
+      sum(vent == 'yes' | vent == 'vent', na.rm = TRUE), ' (',
+      100*round(mean(vent == 'yes' | vent == 'trach', na.rm = TRUE),2), ')'),
+    'Tracheostomy collar, n (%)' = paste0(
+      sum(vent == 'trach', na.rm = TRUE),' (',
+      100*round(mean(vent == 'trach', na.rm = TRUE),2), ')'),
+    'Contact precautions, n (%)' = paste0(
+      sum(iso == 'yes', na.rm = TRUE), ' (',
+      100*round(mean(iso == 'yes', na.rm = TRUE),2), ')'),
+    'KPC, n (%)' = paste0(
+      sum(kpc == 'yes', na.rm = TRUE), ' (',
+      100*round(mean(kpc == 'yes', na.rm = TRUE),2), ')'),
+    'NDM, n (%)' = paste0(
+      sum(ndm == 'yes', na.rm = TRUE), ' (',
+      100*round(mean(ndm == 'yes', na.rm = TRUE),2), ')'),
+    'OXA-48, n (%)' = paste0(
+      sum(oxa48 == 'yes', na.rm = TRUE), ' (',
+      100*round(mean(oxa48 == 'yes', na.rm = TRUE),2), ')'),
+    'IMP, n (%)' = paste0(
+      sum(imp == 'yes', na.rm = TRUE), ' (',
+      100*round(mean(imp == 'yes', na.rm = TRUE),2), ')'),
+    'VIM, n (%)' = paste0(
+      sum(vim == 'yes', na.rm = TRUE), ' (',
+      100*round(mean(vim == 'yes', na.rm = TRUE),2), ')'),
+    'Any carbapenemase gene, n (%)' = paste0(
+      sum(kpc == 'yes' | ndm == 'yes' | oxa48 == 'yes' | imp == 'yes' | vim == 'yes', na.rm = TRUE), ' (',
+      100*round(mean(kpc == 'yes' | ndm == 'yes' | oxa48 == 'yes' | imp == 'yes' | vim == 'yes', na.rm = TRUE),2), ')'),
+    'Carbapenemase-positive with contact precautions, n/N (%)' = paste0(
+      sum((kpc == 'yes' | ndm == 'yes' | oxa48 == 'yes' | imp == 'yes' | vim == 'yes') & 
+            iso == 'yes', na.rm = TRUE), '/', 
+      sum(kpc == 'yes' | ndm == 'yes' | oxa48 == 'yes' | imp == 'yes' | vim == 'yes', na.rm = TRUE), ' (',
+      100*round(sum((kpc == 'yes' | ndm == 'yes' | oxa48 == 'yes' | imp == 'yes' | vim == 'yes') & 
+            iso == 'yes', na.rm = TRUE) / 
+                  sum(kpc == 'yes' | ndm == 'yes' | oxa48 == 'yes' | imp == 'yes' | vim == 'yes', na.rm = TRUE) 
+                       ,2), ')'),
+    'Carbapenemase-positive known to facility, n/N (%)' = paste0(
+      sum((kpc == 'yes' | ndm == 'yes' | oxa48 == 'yes' | imp == 'yes' | vim == 'yes') & 
+                known_cre == 'yes', na.rm = TRUE), '/', 
+      sum(kpc == 'yes' | ndm == 'yes' | oxa48 == 'yes' | imp == 'yes' | vim == 'yes', na.rm = TRUE), ' (',
+      100*round(sum((kpc == 'yes' | ndm == 'yes' | oxa48 == 'yes' | imp == 'yes' | vim == 'yes') & 
+            known_cre == 'yes', na.rm = TRUE) / 
+                  sum(kpc == 'yes' | ndm == 'yes' | oxa48 == 'yes' | imp == 'yes' | vim == 'yes', na.rm = TRUE) 
+                       ,2), ')')
+  )
+
+# facil_cts <- table(dat$factype[!duplicated(dat$f_id)])
+
+summary_dat <- bind_rows(summary_facil,summary_all) %>% 
+  mutate(factype = gsub('V','v',toupper(factype)),
+         factype = ifelse(is.na(factype),'All',factype)) %>% 
+  rename('Facility type' = factype) 
+
+# summary_dat$`Facility type (n)` <- sapply(summary_dat$`Facility type (n)`, function(x){
+#   if(x == 'All') ct <- sum(facil_cts)
+#   else ct <- facil_cts[tolower(x)]
+#   paste0(x, ' (', ct, ')')
+# })
+
+(t(summary_dat))
+```
+
+# Figure 1: Prevalence of NDM is increasing over time in certain vSNFs.
+
+## Panel A: Survey timeline.
+
+```{r}
+survey_dates <- data.frame(survey=c('13','13','13','13-1','13-1','13-2','13-2','13-3','13-3'),
+                           factype=c('ICUs','LTACHs','vSNFs',rep(c('LTACHs','vSNFs'),3)),
+                           start_date=as.Date(c('2017-10-01','2017-04-01','2016-11-01',
+                                                rep('2018-01-01',2),rep('2018-07-01',2),rep('2019-01-01',2))),
+                           end_date=as.Date(c('2018-04-30','2017-12-30','2017-03-30',
+                                              rep('2018-06-30',2),rep('2018-12-30',2),rep('2019-07-30',2))))
+
+f1a <- ggplot(survey_dates,aes(x=start_date, y=factype, color=factor(survey))) + 
+  geom_linerange(aes(xmin=start_date,xmax=end_date), position = position_dodge(0), size = 3) +
+  # geom_segment(aes(x=start_date,xend=end_date,yend=survey),size=15,alpha=0.5) +
+ scale_colour_discrete(guide=guide_legend(override.aes=list(size=7))) + #or legend will be too big
+  labs(x='',y='',col='Survey') + scale_color_manual(values = cols) + theme(axis.text.x=element_text(angle=0, hjust = 0.5, vjust = 0.5))
+f1a
+```
+
+
+## Panel B: Prevalence of NDM, but not KPC, is increasing over time in certain vSNFs.
+
+```{r}
+dat_dup <- dat %>% #filter(factype != 'icu') %>% 
+  mutate(ndmkpc=ifelse(bla == 'NDM & KPC',2,1)
+         ) %>% uncount(ndmkpc)
+
+dat_dup$bla[duplicated(dat_dup)] <- 'KPC'
+dat_dup$bla[dat_dup$bla == 'NDM & KPC'] <- 'NDM'
+
+totals <- dat_dup %>% group_by(f_id, survey) %>% 
+  summarize(count = n())
+
+dat_dup_bla <- dat_dup %>% group_by(f_id,bla,survey, .drop=FALSE) %>% summarize(count=n())  %>% filter(bla != '' & grepl('13',survey))
+
+dat_dup_bla$nsamp <- sapply(1:nrow(dat_dup_bla), function(x){
+  fid <- dat_dup_bla$f_id[x]
+  s <- dat_dup_bla$survey[x]
+  tc <- totals$count[totals$f_id == fid & totals$survey == s]
+  ifelse(length(tc) == 0, NA, tc)
+})
+
+dat_dup_bla <- dat_dup_bla %>% mutate(prevalence=ifelse(nsamp == 0, 0, count/nsamp))
+
+p1 <- dat_dup_bla %>% filter(!f_id %in% c('O_vsnf','P_vsnf')) %>% 
+  mutate(grp = paste0(f_id,bla),
+         bla = as.factor(bla),
+         factype = gsub('V','v',toupper(factor(gsub('.*_','',f_id)))),
+         f_id = gsub('_.*','',f_id)) %>% 
+  filter(bla != '' & grepl('13',survey) & factype != 'ICU') %>% 
+  ggplot(aes(x = survey, y = prevalence, group = grp, col = f_id)) + geom_point(size=3) + geom_line(size=1.5) + facet_grid(bla~factype) +  labs(x='Survey',y='Prevalence',col='Facility') +
+  scale_color_manual(values = l_cols) + 
+  guides(color=guide_legend(ncol=1))
+fills <- c(`NDM & KPC` = "white", None = "white", KPC = "#A9A9A980", NDM = "#1874CD80", `NDM & KPC` = "white", None = "white", KPC = "#A9A9A980", NDM = "#1874CD80")
+f1b <- plot_panel_cols(p1, fills)
+f1b
+```
+
+Statistical test for changes in NDM and KPC over time
+
+```{r}
+tests_ndm <- sapply(unique(dat_dup_bla$f_id), function(x){
+  dat_fid <- dat_dup_bla %>% filter(bla == 'NDM' & f_id == x & !is.na(nsamp))
+  if(nrow(dat_fid) == 4){
+    # test <- prop.test(dat_fid$count, dat_fid$nsamp, correct = TRUE)$p.value
+    # test <- binom.test(dat_fid$count[1]+1, dat_fid$nsamp[1]+1, p = (dat_fid$count[4]+1)/(dat_fid$nsamp[4]+1))$p.value
+    ndm_13 <- dat_fid$count[1]
+    nondm_13 <- dat_fid$nsamp[1] - ndm_13
+    ndm_303 <- dat_fid$count[4]
+    nondm_303 <- dat_fid$nsamp[4] - ndm_303
+    test <- fisher.test(matrix(c(ndm_13, nondm_13, ndm_303, nondm_303), nrow = 2))$p.value
+    test <- signif(test, 2)
+  }else{
+    test <- NA
+  }
+  c('NDM count (survey 13)' = dat_fid$count[1], 
+    'Total count (survey 13)' = dat_fid$nsamp[1],
+    'NDM proportion (survey 13)' = round(dat_fid$count[1]/dat_fid$nsamp[1], 2), 
+    'NDM count (survey 13-3)' = dat_fid$count[4], 
+    'Total count (survey 13-3)' = dat_fid$nsamp[4],
+    'NDM proportion (survey 13-3)'  = round(dat_fid$count[4]/dat_fid$nsamp[4]), 
+    'NDM p' = test)
+})
+
+tests_kpc <- sapply(unique(dat_dup_bla$f_id), function(x){
+  dat_fid <- dat_dup_bla %>% filter(bla == 'KPC' & f_id == x & !is.na(nsamp))
+  if(nrow(dat_fid) == 4){
+    # test <- prop.test(dat_fid$count, dat_fid$nsamp, correct = TRUE)$p.value
+    # test <- binom.test(dat_fid$count[1]+1, dat_fid$nsamp[1]+1, p = (dat_fid$count[4]+1)/(dat_fid$nsamp[4]+1))$p.value
+    ndm_13 <- dat_fid$count[1]
+    nondm_13 <- dat_fid$nsamp[1] - ndm_13
+    ndm_303 <- dat_fid$count[4]
+    nondm_303 <- dat_fid$nsamp[4] - ndm_303
+    test <- fisher.test(matrix(c(ndm_13, nondm_13, ndm_303, nondm_303), nrow = 2))$p.value
+    test <- signif(test, 2)
+  }else{
+    test <- NA
+  }
+  c('KPC count (survey 13)' = dat_fid$count[1], 
+    'Total count (survey 13)' = dat_fid$nsamp[1],
+    'KPC proportion (survey 13)' = round(dat_fid$count[1]/dat_fid$nsamp[1],2), 
+    'KPC count (survey 13-3)' = dat_fid$count[4], 
+    'Total count (survey 13-3)' = dat_fid$nsamp[4],
+    'KPC proportion (survey 13-3)' = round(dat_fid$count[1]/dat_fid$nsamp[4]), 
+    'KPC p' = test)
+})
+
+prop_pvals <- cbind(t(tests_ndm), t(tests_kpc))  %>% as_tibble() %>% 
+  mutate(Facility = paste(gsub('V','v',toupper(gsub('.*_','',colnames(tests_ndm)))), 
+                            gsub('_.*','',colnames(tests_ndm))),
+         .before = 1) %>% 
+  mutate(`Total count (survey 13)` = coalesce(`Total count (survey 13)`,V9),
+         `Total count (survey 13-3)` = coalesce(`Total count (survey 13-3)`,V12)) %>% 
+  select(-c(V9, V12)) %>% 
+  select("Facility","NDM count (survey 13)","NDM proportion (survey 13)",
+         "KPC count (survey 13)","KPC proportion (survey 13)", "Total count (survey 13)",
+         "NDM count (survey 13-3)","NDM proportion (survey 13-3)",
+         "KPC count (survey 13-3)","KPC proportion (survey 13-3)","Total count (survey 13-3)",
+         "NDM p", "KPC p") %>% arrange(`NDM p`, -`NDM proportion (survey 13)`) %>% 
+  mutate("NDM p" = signif(p.adjust(`NDM p`, method = 'BH'),2),
+         "KPC p" = signif(p.adjust(`KPC p`, method = 'BH'),2))
+
+# 
+# 
+# prop_pvals2 <- cbind(t(tests_ndm2), t(tests_kpc2))  %>% as_tibble() %>% 
+#   mutate(Facility = paste(gsub('V','v',toupper(gsub('.*_','',colnames(tests_ndm)))), 
+#                             gsub('_.*','',colnames(tests_ndm))),
+#          .before = 1) %>% 
+#   mutate(`Total count (survey 13)` = coalesce(`Total count (survey 13)`,V9),
+#          `Total count (survey 13-3)` = coalesce(`Total count (survey 13-3)`,V12)) %>% 
+#   select(-c(V9, V12)) #%>% arrange(`NDM p`)
+
+prop_pvals
+```
+
+
+```{r}
+f1a_p <- plot_grid(NULL, f1a, rel_widths = c(0.01,1))
+f1b_p <- plot_grid(NULL, f1b, rel_widths = c(0.05,1))
+ggsave(plot = plot_grid(f1a_p, f1b_p, nrow = 2, rel_heights = c(0.3,1), axis = 'l', align = 'v', labels = 'AUTO'), 
+       filename = 'figures/Fig1.pdf', 
+       width = 10, height = 8)
+```
+
+# Figure 2: The majority of NDM+ isolates are Kp ST147 and carry NDM on the IncF plasmid.
+
+The one _E. coli_ isolate that has NDM on the IncF plasmid is ST354.
+
+```{r}
+# plasmid_metadat %>% filter(!is.na(ec_st)) %>% select(ec_st, bla, X1) %>% table()
+# table(plasmid_metadat$bla, plasmid_metadat$ec_st)
+plasmid_metadat %>% filter(!is.na(ec_st) & bla == 'NDM+' & X1 == 1) %>% select(ec_st)
+```
+
+
+```{r}
+st_ndm <- c(unique(plasmid_metadat$ST[plasmid_metadat$bla %in% c('NDM+','NDM+/KPC+') & 
+                                      !plasmid_metadat$ST %in% c('ND','Novel',NA)]),
+            '258')
+
+plot_dat <- plasmid_metadat %>% mutate(bla=ifelse(is.na(bla),'None',bla),
+               #bla=ifelse(bla=='NDM & KPC','NDM &\nKPC',bla),
+               bla=gsub('\\+','', bla),
+               bla=gsub('/',' & ', bla),
+               bla=factor(bla,levels=c('NDM','KPC','NDM & KPC','None')),
+               ST_orig = ST,
+               ST=ifelse(!ST %in% c(147,258) | is.na(ST), 'Other', paste0('ST',ST)),
+               ST=ifelse(species=='Klebsiella pneumoniae',ST,species),
+               ST = ifelse(ST == 'Escherichia coli','E. coli',ST),
+               ST = ifelse(ST == 'Acinetobacter baumannii','Other',ST),
+               ST = ifelse(ST == 'Proteus mirabilis','Other',ST),
+               ST = ifelse(ST == 'Citrobacter koseri','Other',ST),
+               ST = factor(ST,levels=rev(c('ST147','ST258','E. coli','Other'))),
+               grp=ifelse(species!='Klebsiella pneumoniae' | is.na(species),'Other species',species))
+
+
+f2 <- plot_dat %>% filter(!is.na(ST) & !is.na(IncF_plasmid)) %>% 
+  mutate(IncF_plasmid = ifelse(IncF_plasmid==1,'IncF plasmid','No IncF plasmid'),
+         ST = factor(ST,levels=(c('ST147','ST258','E. coli','Other'))),
+         IncF_plasmid = factor(IncF_plasmid, labels = c('"IncF plasmid"', '"No IncF plasmid"')),
+         grp = factor(grp, labels = c(c("Klebsiella pneumoniae"='italic("Klebsiella pneumoniae")', 'Other'='"Other"')))
+         ) %>%
+  ggplot(aes(x=ST,fill=bla)) + geom_bar() + 
+  theme( strip.background = element_rect(fill="white",linetype='blank'), text=element_text(size=15)) +
+  labs(y='Count',fill='Carbapenemase',x='',alpha='IncF plasmid') + 
+  scale_fill_manual(values = bla_cols) +
+  scale_x_discrete(labels = c('ST147'='ST147', 'ST258'='ST258', 'Other'='Other', "E. coli"=expression(italic("E. coli")), 'Other'='Other')) +  
+  facet_grid(IncF_plasmid~grp,scales="free",space='free', labeller = label_parsed)
+f2 
+```
+
+
+```{r}
+ggsave(plot = plot_grid(f2), 
+       filename = 'figures/Fig2.pdf', 
+       width = 6, height = 4)
+```
+
+# Figure 3: REALM isolates are clonally separated from all public isolates, suggesting one introduction into the region, possibly via HGT.
+
+```{r}
+long_branches <- c('573.9788', '573.32158', '573.32159', '573.32155')
+tr_nl <- drop.tip(tr,long_branches)
+# hdat <- metadat %>% filter(bla != 'None') %>% select(gID, Region) %>% 
+#   mutate(Region=ifelse(grepl('REALM',gID),'Chicago area',Region)) %>% deframe()
+# hdat <- hdat[tr_nl$tip.label]  
+# names(hdat) <- tr_nl$tip.label
+# hdat <- c(hdat,rep(NA,Nnode(tr_nl)))
+
+hmdat <- metadat %>% select(realm, Region, NDM, KPC, IncF_plasmid) %>% data.frame() #mutate(IncF_plasmid=ifelse(IncF_plasmid == 1, 'Present','Absent')) %>% data.frame()
+hmdat$Region[hmdat$realm == 'REALM'] <- 'Chicago area'
+hmdat <- hmdat %>% select(Region, NDM, IncF_plasmid, KPC) %>% 
+  mutate(NDM=ifelse(grepl('NDM',NDM),'NDM',NDM),
+         KPC=ifelse(grepl('KPC',KPC),'KPC',KPC)) %>%
+  rename('IncF plasmid'=IncF_plasmid)
+rownames(hmdat) <- metadat$gID
+
+padat <- hmdat[,c('IncF plasmid','NDM','KPC')]
+gdat <- hmdat[,'Region',drop=F]
+padat$`IncF plasmid`[padat$`IncF plasmid` == 1] <- 'IncF plasmid'
+
+padat[padat == 'Absent'] <- ' '
+
+padat <- padat %>% mutate(`IncF plasmid`=factor(`IncF plasmid`, levels = c('IncF plasmid', ' ')),
+                 NDM=factor(NDM, levels = c('NDM', ' ')),
+                 KPC=factor(KPC, levels = c('KPC', ' ')))
+rownames(padat) <- rownames(hmdat)
+
+tr_nl_w_reg <- drop.tip(tr_nl, rownames(gdat)[is.na(gdat$Region)][rownames(gdat)[is.na(gdat$Region)] %in% tr_nl$tip.label])
+
+p_tr <- ggtree(tr_nl_w_reg, layout = 'fan') + geom_treescale(x=0.00005,offset=0,fontsize = 3)
+gh_tr <- gheatmap(p_tr,
+         gdat, width = 0.25/3, color = NA, colnames_position = 'top', colnames_angle = 45, colnames_offset_y = 25, colnames = F, colnames_offset_x = 0.000002, font.size = 3) + scale_fill_manual(values = cols, na.value='whitesmoke') + ylim(c(0,540)) + labs(fill='Region')
+
+f3 <- gheatmap(gh_tr + new_scale_fill(), padat, width = 0.25, color = NA, offset = 0.000005, colnames = F,
+         font.size = 3) +
+  scale_fill_manual(values = cols, na.value='whitesmoke', breaks = c('IncF plasmid','NDM','KPC'))  + labs(fill = 'Genomic element') + theme(text=element_text(size=15))
+f3
+```
+
+```{r}
+ggsave(plot = f3, filename = 'figures/Fig3.pdf', width = 10, height = 6)
+```
+
+# Figure 4: NDM+ ST147 has been around since 2015/2016.  
+
+First remove potential duplicate patients (so there's not confusion about number of patients sampled at different time periods).
+
+```{r}
+root_ci <- mixedcarc$CI[which.min(rowSums(mixedcarc$CI)),]
+
+tt <- tidytree::as.treedata(mixedcarc$tree)
+ci <- as_tibble(cbind(1:(Ntip(tt) + Nnode(tt)), lapply(1:nrow(mixedcarc$CI), function(x) mixedcarc$CI[x,])))
+names(ci) = c('node','CI')
+ci <- ci %>% mutate(node = unlist(node), rootCI=ifelse(node == rootnode(tt)-1, CI, NA))
+# ci <- ci %>% mutate(lengthCI=upperCI-lowerCI)
+
+tt <- full_join(tt,ci, by = 'node')
+
+tt_nodup <- drop.tip(tt, mixedcarc$tree$tip.label[!mixedcarc$tree$tip.label %in% nodup_gids])
+
+tiplocs <- c(sapply(as.phylo(tt_nodup)$tip.label, function(x) metadat$f_id[metadat$gID == x]),rep(NA,Nnode(tt_nodup)))
+tiplocs_uniq <- sort(unique(tiplocs[!is.na(tiplocs)]))
+tiptypes <- factor(gsub('.*_','',tiplocs),levels=c('vsnf','ltach','icu'))
+tiplocs <- gsub('_.*','',tiplocs)
+tip_shapes <- gsub('.*_','',tiplocs_uniq)
+tip_shapes[tip_shapes == 'vsnf'] <- 16
+tip_shapes[tip_shapes == 'ltach'] <- 17
+tip_shapes[tip_shapes == 'icu'] <- 15
+tip_shapes <- as.numeric(tip_shapes)
+  
+f4_1 <- ggtree(tt_nodup, mrsd=date_decimal(max(res$CI))) + theme_tree2() + geom_range('rootCI', color='grey', size=3, alpha=.3) + geom_tippoint(aes(col=tiplocs, shape=tiptypes),size=3, alpha = 0.9) + scale_color_manual(values=l_cols[sort(unique(tiplocs))]) + guides(col=guide_legend(ncol=2)) + labs(col='Facility',shape='Facility type') + theme(text=element_text(size=15)) + scale_shape(labels = c("vSNF", "LTACH", "ICU")) + guides(colour = guide_legend(override.aes = list(shape = tip_shapes)))
+
+# Chicago PROTECT intervention: July 1, 2017 to June 30, 2019
+survey_dates_w_intervention <- data.frame(survey=factor(c('13','13','13','13-1','13-1','13-2','13-2','13-3','13-3','Intervention'),levels=c('13','13-1','13-2','13-3','Intervention')),
+                           factype=factor(c('ICUs','LTACHs','vSNFs',rep(c('LTACHs','vSNFs'),3),'Intervention'),levels=rev(c('vSNFs','LTACHs','ICUs','Intervention'))),
+                           start_date=as.Date(c('2017-10-01','2017-04-01','2016-11-01',
+                                                rep('2018-01-01',2),rep('2018-07-01',2),rep('2019-01-01',2), '2017-07-01')),
+                           end_date=as.Date(c('2018-04-30','2017-12-30','2017-03-30',
+                                              rep('2018-06-30',2),rep('2018-12-30',2),rep('2019-07-30',2),'2019-06-30')))
+
+f_time <- ggplot(survey_dates_w_intervention,aes(x=start_date, y=factype, color=survey)) +
+  geom_linerange(aes(xmin=start_date,xmax=end_date), position = position_dodge(0), size = 3) +
+  # geom_segment(aes(x=start_date,xend=end_date,yend=survey),size=15,alpha=0.5) +
+ scale_colour_discrete(guide=guide_legend(override.aes=list(size=7))) + #or legend will be too big
+  labs(x='',y='',col='Survey') + scale_color_manual(values = c(cols,Intervention='darkseagreen3'), breaks = c('13','13-1','13-2','13-3')) + theme(axis.text.x=element_text(angle=0)) + theme_classic() + guides(col=guide_legend(nrow = 2)) + theme(axis.text.x = element_blank(), line = element_blank(),
+    text=element_text(size=15)) 
+
+
+f4 <- plot_grid(f4_1 + theme(), plot_grid(NULL, f_time, NULL, nrow = 1, rel_widths = c(0.9,10,1.1)), nrow = 2, rel_heights = c(1,0.3)) 
+f4
+```
+
+
+```{r}
+f4 <- plot_grid(plot_grid(f4_1, NULL, rel_widths = c(1,0.027)), 
+                plot_grid(NULL, f_time, nrow = 1, rel_widths = c(2.05,10)), 
+                nrow = 2, rel_heights = c(1,0.2)) 
+ggsave(plot = f4, filename = 'figures/Fig4.pdf', width = 10, height = 8)
+```
+
+
+# Figure 5: Intra-facility transmission is driving prevalence at high-prevalence vSNFs.
+
+## Panel A: Quantified facility clustering on the phylogeny
+
+```{r}
+tr_realm <- drop.tip(tr, tr$tip.label[!grepl('REALM',tr$tip.label)])
+
+get_clusters_survey <- function(survey_num, pureness){
+  survey <- metadat %>% select(gID, survey) %>% deframe()
+  survey <- survey[tr_realm_nodup$tip.label]
+  gids <- names(survey)[survey == survey_num]
+  locs <- metadat %>% select(gID, f_id) %>% deframe()
+  tr_sub <- drop.tip(tr_realm_nodup, tr_realm_nodup$tip.label[!tr_realm_nodup$tip.label %in% gids])
+  locs <- locs[tr_sub$tip.label]
+
+  locs_plot <- c(locs, rep(NA, Nnode(tr_sub)))
+  factype <- toupper(gsub('.*_','',locs_plot))
+  factype <- factor(ifelse(factype == 'VSNF','vSNF',factype),levels=c('vSNF','LTACH'))
+  locs_plot <- gsub('_.*','',locs_plot)
+  
+  tiplocs <- c(sapply(as.phylo(tr_sub)$tip.label, function(x) metadat$f_id[metadat$gID == x]),rep(NA,Nnode(tr_sub)))
+  tiplocs_uniq <- sort(unique(tiplocs[!is.na(tiplocs)]))
+  tiptypes <- factor(gsub('.*_','',tiplocs),levels=c('vsnf','ltach','icu'))
+  tiplocs <- gsub('_.*','',tiplocs)
+  tip_shapes <- gsub('.*_','',tiplocs_uniq)
+  tip_shapes[tip_shapes == 'vsnf'] <- 16
+  tip_shapes[tip_shapes == 'ltach'] <- 17
+  tip_shapes[tip_shapes == 'icu'] <- 15
+  tip_shapes <- as.numeric(tip_shapes)
+  
+  tr_survey <- ggtree(tr_sub) + geom_tippoint(aes(color=locs_plot, shape=tiptypes),size=3) + scale_color_manual(values = l_cols, na.value='whitesmoke') + guides(color=guide_legend(ncol=2)) + labs(col='Facility',shape='Facility type') + scale_shape(labels = c("vSNF", "LTACH", "ICU")) + guides(colour = guide_legend(override.aes = list(shape = tip_shapes)))
+  
+  subtrs_sub <- subtrees(tr_sub)
+  pure_subtrees <- get_largest_subtree(subtrs_sub, locs, bootstrap = 90, pureness = pureness)
+  pure_subtr_info <- bind_cols(survey=survey_num,f_id=locs, ftype=gsub('.*_','',locs),
+                               subtr_size=unlist(pure_subtrees$largest_st),
+                               index=unlist(pure_subtrees$largest_st_i))
+  # change singletons from 0 to 1
+  pure_subtr_info <- pure_subtr_info %>% mutate(subtr_size=ifelse(subtr_size==0 & index == 1, 1, subtr_size))
+  # remove duplicates (singletons aren't duplicates)
+  pure_subtr_info <- pure_subtr_info[!duplicated(pure_subtr_info) | pure_subtr_info$subtr_size == 1,]
+  return(list(tr_survey=tr_survey, pure_subtr_info=pure_subtr_info))
+}
+
+tr_realm_nodup <- drop.tip(tr_realm, tr_realm$tip.label[!tr_realm$tip.label %in% metadat$gID])
+
+
+subtr_9_13 <- get_clusters_survey('13', 0.9)
+subtr_9_301 <- get_clusters_survey('13-1', 0.9)
+subtr_9_302 <- get_clusters_survey('13-2', 0.9)
+subtr_9_303 <- get_clusters_survey('13-3', 0.9)
+
+
+all_subtr_survey <- bind_rows(subtr_9_13$pure_subtr_info,subtr_9_301$pure_subtr_info,subtr_9_302$pure_subtr_info,subtr_9_303$pure_subtr_info)
+
+set.seed(0)
+f5a <- all_subtr_survey %>% filter(ftype != 'icu') %>% 
+  mutate(ftype = gsub('V','v',toupper(ftype)), f_id = gsub('_.*','',f_id)) %>%
+  ggplot(aes(x=f_id,y=subtr_size,col=factor(survey))) + geom_jitter(size=3,alpha=0.75) +#,position = position_jitter(w = 0.2, h = 0)) +
+  facet_grid(~ftype, scale='free_x',space='free') + labs(x='',y='Number of isolates\nin phylogenetic cluster',col='Survey') + theme(axis.text.x = element_text(angle = 0, hjust = 0.5, vjust = 0.5)) + scale_color_manual(values = cols) + scale_y_log10()
+
+f5a
+```
+
+## Panel B: Inter- and intra-facility pairwise SNV distances over time. 
+
+```{r}
+# no duplicate patients
+dna_dists_pwt <- dist.dna(dna_realm, model = 'N', pairwise.deletion = T, as.matrix = T)
+
+locs_tips <- metadat %>% select(gID, f_id) %>% deframe()
+pt <- metadat %>% select(gID, patient) %>% deframe()
+los <- metadat %>% select(gID, facility_day) %>% deframe()
+factype <- metadat %>% select(gID, factype) %>% deframe()
+
+get_snv_dists <- function(survey){
+  sids <- metadat$gID[metadat$survey == survey & !is.na(metadat$survey)]
+  dna_dists_sub <- dna_dists_pwt[sids,sids]
+  loc_sub <- locs_tips[sids]
+  pt_sub <- pt[sids]
+  los_sub <- los[sids]
+  factype_sub <- factype[sids]
+  snps <- dna_dists_sub[lower.tri(dna_dists_sub, diag = FALSE)] <- NA
+  snps <- na.omit(data.frame(as.table(dna_dists_sub)))
+  head(snps)
+  snps$loc1 <- loc_sub[snps$Var1]
+  snps$loc2 <- loc_sub[snps$Var2]
+  snps$pt1 <- pt_sub[snps$Var1]
+  snps$pt2 <- pt_sub[snps$Var2]
+  snps$survey <- rep(survey, nrow(snps))
+  snps$los1 <- los_sub[snps$Var1]
+  snps$los2 <- los_sub[snps$Var2]
+  snps$factype1 <- factype_sub[snps$Var1]
+  snps$factype2 <- factype_sub[snps$Var2]
+  snps
+}
+
+snvs13 <- get_snv_dists('13')
+snvs301 <- get_snv_dists('13-1')
+snvs302 <- get_snv_dists('13-2')
+snvs303 <- get_snv_dists('13-3')
+
+all_snvs <- 
+  bind_rows(bind_cols(snvs13 %>% 
+                        filter(pt1 != pt2 & #los1 < 365/2 & los2 < 365/2 & 
+                                 factype1 != 'icu' & factype2 != 'icu') %>% mutate(intra=ifelse(loc1==loc2,'Intra-facility pair','Inter-facility pair'))),
+            bind_cols(snvs301 %>% 
+                        filter(pt1 != pt2 & #los1 < 365/2 & los2 < 365/2 &
+                                 factype1 != 'icu' & factype2 != 'icu') %>% mutate(intra=ifelse(loc1==loc2,'Intra-facility pair','Inter-facility pair'))),
+            bind_cols(snvs302 %>% 
+                        filter(pt1 != pt2 & #los1 < 365/2 & los2 < 365/2 & 
+                                 factype1 != 'icu' & factype2 != 'icu') %>% mutate(intra=ifelse(loc1==loc2,'Intra-facility pair','Inter-facility pair'))),
+            bind_cols(snvs303 %>% 
+                        filter(pt1 != pt2 & #los1 < 365/2 & los2 < 365/2 & 
+                                 factype1 != 'icu' & factype2 != 'icu') %>% mutate(intra=ifelse(loc1==loc2,'Intra-facility pair','Inter-facility pair'))))
+
+p5 <- all_snvs %>% ggplot(aes(x=Freq, fill=intra)) + geom_histogram(position="identity",bins=30) + facet_grid(~survey) + labs(x='Pairwise SNV distance', y='\nCount',fill='') + scale_fill_manual(values = c('Inter-facility pair'=adjustcolor('darkslategray3',alpha.f=0.5),'Intra-facility pair'=adjustcolor('lightsalmon',alpha.f=0.5))) + 
+  geom_point(x = 12, y = 0, shape = 18, col = 'dimgrey', show.legend = FALSE) 
+
+fills <- rep(c('13'=adjustcolor('tan1',alpha.f = 0.5), '301'=adjustcolor('#bdc9e1',alpha.f = 0.5), '302'=adjustcolor('#67a9cf',alpha.f = 0.5), '303'=adjustcolor('#02818a',alpha.f = 0.5)),2)
+f5b <- plot_panel_cols(p5, fills)
+f5b 
+```
+
+
+```{r}
+f5 <- plot_grid(plot_grid(f5a, NULL, rel_widths = c(2,0.22)), f5b, nrow=2, rel_heights = c(1.2,1), labels = 'AUTO')
+ggsave(plot = f5, filename = 'figures/Fig5.pdf', width = 8, height = 6)
+```
+
+
+# Supplemental figures
+
+## Supplements to Figure 1
+
+### Figure S1: Raw counts of KPC and NDM over time/survey and facilities - x axis is survey/time, y axis is facility or facility type, color is NDM/KPC, shape is species.
+
+```{r}
+fs1 <- dat_dup %>% filter(bla != '' & grepl('13',survey)) %>% mutate(factype = gsub('V','v',toupper(gsub('.*_','',f_id))), f_id = gsub('_.*','',f_id), bla = factor(bla,levels = c('NDM','KPC'))) %>%
+  ggplot(aes(x=as.character(survey),y=factor(f_id, levels = rev(unique(f_id))), col=bla)) + geom_jitter(size = 3, alpha = 0.5) + labs(x='Survey', y='Facility',col='Carbapenemase', shape = 'Species') + facet_grid(factype~., scales = 'free', space = 'free') + theme(axis.text.x = element_text(angle=0), strip.background = element_rect(fill="white",linetype='blank'), text=element_text(size=15)) + scale_color_manual(values = bla_cols) + guides(color = guide_legend(override.aes = list(size = 3))) + scale_shape_manual(values=c(3, 4, 15, 19, 17, 18, 8)) 
+fs1
+```
+
+```{r}
+ggsave('figures/FigS1.pdf', fs1, width = 10, height = 6)
+```
+
+
+## Figure S2: High-prevalence vSNFs are not closely connected by the patient transfer network.
+
+```{r}
+# ndm counts at each facility - CHANGE TO PREVALENCE!
+ndm_prev <- dat_dup_bla %>% filter(bla == 'NDM') %>% group_by(f_id) %>% summarize(prevalence=sum(count, na.rm=T)/sum(nsamp, na.rm=T)) %>% select(f_id, prevalence) %>% deframe() %>% data.frame()
+#   metadat_all %>% filter(bla %in% c('NDM','NDM & KPC')) %>% select(f_id) %>% group_by(f_id) %>% summarize(count=n()) %>% deframe() %>% data.frame()
+colnames(ndm_prev) <- 'NDM prevalence'
+
+mannot <- ndm_prev %>% mutate('Facility type' = gsub('V','v',toupper(gsub('.*_','',rownames(ndm_prev)))), .before = `NDM prevalence`)
+rownames(mannot) <- rownames(ndm_prev)
+
+# convert distances to not -log10 - so the bigger the number, the more flow
+# rows are from, columns are to
+pt_flow = 10^(-ksp$dist_mats[[1]]) # calculated from normalized edge weight by number of outgoing patient transfers of source vertex
+facil_vertex_inds = as.vector(V(g)[!is.na(V(g)$labels)]) 
+names(facil_vertex_inds) = V(g)$labels[!is.na(V(g)$labels)] # vertex names
+pt_flow = pt_flow[order(names(facil_vertex_inds)),order(names(facil_vertex_inds))]
+colnames(pt_flow) = sapply(colnames(pt_flow), function(x) names(facil_vertex_inds)[facil_vertex_inds == x])
+rownames(pt_flow) = sapply(rownames(pt_flow), function(x) names(facil_vertex_inds)[facil_vertex_inds == x])
+diag(pt_flow) = NA
+
+mat_order <- rev(rownames(mannot)[order(gsub('.*_','',rownames(mannot)),rownames(mannot))])
+pt_flow <- pt_flow[mat_order,mat_order]
+rownames(pt_flow) = colnames(pt_flow) = gsub('_.*','',rownames(pt_flow))
+fs2p <- pheatmap(pt_flow,
+                   color = colorRampPalette(c('white','orange'))(100), 
+                   cluster_rows = F, cluster_cols = F,
+                   annotation_col = mannot,
+                   annotation_row = mannot, border_color = 'gray88', gaps_row = c(7,13), gaps_col = c(7,14),
+         annotation_colors = list("NDM prevalence"=colorRampPalette(c('white','dodgerblue3'))(100),
+                                  "Facility type"=c(vSNF='purple',LTACH='orchid',ICU='pink')), 
+         na_col = 'gray92', cellwidth = NA, cellheight = NA)
+
+fs2 <- as.ggplot(fs2p, scale = 1, hjust = 0, vjust = 0) + 
+  geom_text(x=0.79, y=1.01, label="Patient flow", size = 5) + 
+  geom_text(x=0.32, y=1.03, label="Destination", size = 5) + 
+  geom_text(x=-0.03, y=0.57, label="Source", angle=90, size = 5) + 
+  xlim(c(-0.05,1.1)) + ylim(c(0,1.05))
+fs2
+```
+
+```{r}
+ggsave('figures/FigS2.pdf', fs2, width = 10, height = 7)
+```
+
+
+### Something about [lack of] correlation between hygiene and prevalence?
+
+
+## Supplements to Figure 2
+
+### Spreadsheet with isolate id, patient id, survey, survey year, facility, NDM/KPC, species, ST, plasmid.
+
+```{r}
+plasmid_metadat %>% select(gID, survey, survey_year, f_id, pt_id, species, ST, bla, IncF_plasmid) %>% 
+  write_csv('supplemental_data/study_isolate_metadata.csv')
+```
+
+### IncF plasmid across time and facilities. 
+
+```{r}
+bla_plas_cts <- table(plasmid_metadat %>% 
+                        mutate(factype = gsub('.*_','',f_id), 
+                               bla = gsub('\\+','',bla), 
+                               bla = gsub('/',' & ', bla), 
+                               bla = ifelse(is.na(bla), 'None',bla), 
+                               factype = ifelse(factype == 'vsnf','vSNF',toupper(factype)), 
+                               f_id = gsub('_.*','',f_id)) %>% 
+                        filter(!is.na(f_id) & !is.na(species) & IncF_plasmid == 1) %>% 
+                        select(ST, bla, survey))
+
+table(plasmid_metadat$IncF_plasmid[plasmid_metadat$survey == 13])
+
+bla_plas_cts
+bla_plas_cts/rowSums(bla_plas_cts)
+```
+
+
+```{r}
+fs5 <- plasmid_metadat %>% mutate(factype = gsub('.*_','',f_id), bla = gsub('\\+','',bla), bla = gsub('/',' & ', bla), bla = ifelse(is.na(bla), 'None',bla), factype = ifelse(factype == 'vsnf','vSNF',toupper(factype)), f_id = gsub('_.*','',f_id)) %>% filter(!is.na(f_id) & !is.na(species) & IncF_plasmid == 1) %>%
+  ggplot(aes(x = factor(survey), y = f_id, col = bla, shape = species)) + geom_jitter(size=3) + facet_grid(factype~., scales = 'free', space = 'free') + scale_color_manual(values = bla_cols) + guides(color = guide_legend(override.aes = list(size = 3))) + scale_shape_manual(values=c(15, 19)) + labs(shape='Species',col='Carbapenemase',x='Survey',y='Facility')
+fs5
+```
+
+```{r}
+ggsave('figures/FigS4.pdf', fs5, width = 10, height = 5)
+```
+
+See corresponding R script for big plasmid map ordered by phylogeny.
+
+## Supplements to Figure 3
+
+### Spreadsheet of metadata on public ST147 isolates: id, collection year, location, NDM, KPC, plasmid.
+
+```{r}
+metadat %>% select(gID, Biosample, Genome.ID, Assembly.Accession, Collection_year, Location, Region, Continent, NDM, KPC, IncF_plasmid) %>% mutate(IncF_plasmid=ifelse(IncF_plasmid=='IncF plasmid','Present','Absent')) %>% write_csv('supplemental_data/public_isolate_metadata.csv')
+``` 
+
+### ML tree of just REALM isolates with plasmid and carbapenemase annotations.
+
+```{r}
+bla_tips <- metadat %>% mutate(bla = gsub('\\+','',bla), bla = gsub('/',' & ', bla), #ifelse(grepl('NDM',NDM),NDM,KPC), 
+                               bla = ifelse(bla == 'Absent', NA, bla)) %>% select(gID, bla) %>% deframe()
+bla_tips <- bla_tips[tr_realm_nodup$tip.label]  
+names(bla_tips) <- tr_realm_nodup$tip.label
+tr_realm_sub <- drop.tip(tr_realm_nodup, names(bla_tips)[is.na(bla_tips)])
+bla_tips <- bla_tips[!is.na(bla_tips)]
+blas <- gsub('_.*','',c(bla_tips,rep(NA,Nnode(tr_realm_sub))))
+
+plas_tips <- metadat %>% select(gID, X1) %>% mutate(X1=ifelse(X1 == 1, 'Present','Absent')) %>% deframe()
+plas_tips <- plas_tips[tr_realm_sub$tip.label]  
+plas <- c(plas_tips, rep(NA,Nnode(tr_realm_sub)))
+
+hm <- metadat %>% select(survey, factype) %>% data.frame()
+rownames(hm) <- metadat$gID
+
+p_tr <- ggtree(tr_realm_sub) + geom_tippoint(aes(color=blas, shape = factor(plas,levels = c('Present','Absent'))), size = 3) + scale_color_manual(values = bla_cols, na.value='whitesmoke') +
+  guides(color=guide_legend(ncol=1)) + labs(shape = 'IncF plasmid', color = 'Carbapenemase')
+p_tr
+# gheatmap(p_tr, hm)
+```
+
+```{r}
+ggsave('figures/FigS5.pdf', p_tr, width = 7, height = 7)
+```
+
+### ML tree of just REALM isolates with facility and year annotations.
+
+## Supplements to Figure 4
+
+### Root-to-tip distance.
+
+```{r}
+# NDM+ clade
+# ndm_mrca <- getMRCA(tr, tip = c('REALM_CRE_57','REALM_CRE_418'))
+# tr_ndm <- extract.clade(tr,ndm_mrca)
+tr_ndm <- mixedcarc$inputtree #drop.tip(tr, tr$tip.label[!tr$tip.label %in% as.phylo(tt)$tip.label])
+yr_ndm <- unlist(sapply(tr_ndm$tip.label, function(x) metadat_all$survey_year[metadat_all$gID == x]))
+# convert edge lengths to substitutions per genome (rather than per site)
+#glength <- 5301922
+#tr_ndm$edge.length <- tr_ndm$edge.length*glength
+
+# Entire ST147 clade
+tr_st147 <- arc_st147$inputtree
+yr_st147 <- unlist(sapply(tr_st147$tip.label, function(x) metadat_all$survey_year[metadat_all$gID == x]))
+#tr_st147$edge.length <- tr_st147$edge.length*glength
+pdf('figures/FigS6.pdf')
+# par(mfrow = c(1,2))
+rtt_ndm <- roottotip(tr_ndm, yr_ndm, showTree = FALSE)
+# rtt_st147 <- roottotip(tr_st147, yr_st147, showTree = FALSE)
+dev.off()
+```
+
+### Table with root dates and CIs for different clocks. 
+
+```{r}
+# NDM+ clade
+results <- list(arc, carc, mixedcarc, mixedgamma, negbin, poisson, relaxedgamma, strictgamma)
+names(results) <- clocks
+
+# The deviance information criterion (DIC) is a hierarchical modeling generalization of the Akaike information criterion (AIC). It is particularly useful in Bayesian model selection problems where the posterior distributions of the models have been obtained by Markov chain Monte Carlo (MCMC) simulation.
+# The idea is that models with smaller DIC should be preferred to models with larger DIC
+model_info <- t(sapply(results, function(i){
+  mcmc=as.mcmc.resBactDating(i)
+  c(effectiveSize(mcmc), summary(mcmc)$statistics[1,1], i$rootdate, i$CI[which.min(rowSums(i$CI)),], i$dic)
+}))
+colnames(model_info) <- c('µ ESS','σ ESS','α ESS','Clock rate','Root date','Root date lower CI','Root date upper CI','DIC')
+
+summary_ndm <- as_tibble(round(model_info, 2)) %>% mutate(Model = rownames(model_info), .before=1)
+
+# entire ST147 clade
+results_st147 <- list(arc_st147, carc_st147, mixedcarc_st147, mixedgamma_st147, negbin_st147, poisson_st147, relaxedgamma_st147, strictgamma_st147)
+names(results_st147) <- clocks_realm
+
+
+# The deviance information criterion (DIC) is a hierarchical modeling generalization of the Akaike information criterion (AIC). It is particularly useful in Bayesian model selection problems where the posterior distributions of the models have been obtained by Markov chain Monte Carlo (MCMC) simulation.
+# The idea is that models with smaller DIC should be preferred to models with larger DIC
+model_info_st147 <- t(sapply(results_st147, function(i){
+  mcmc=as.mcmc.resBactDating(i)
+  c(effectiveSize(mcmc), summary(mcmc)$statistics[1,1], i$rootdate, i$CI[which.min(rowSums(i$CI)),], i$dic)
+}))
+colnames(model_info_st147) <- c('µ ESS','σ ESS','α ESS','Clock rate','Root date','Root date lower CI','Root date upper CI','DIC')
+
+summary_st147 <- as_tibble(round(model_info_st147, 2)) %>% mutate(Model = gsub('_st147','',rownames(model_info_st147)), .before=1)
+
+bind_rows(bind_cols('ST147 clade' = 'NDM+', summary_ndm), bind_cols('ST147 clade' = 'Entire', summary_st147))
+```
+
+## Supplements to Figure 5
+
+### ML phylogeny labeled by facility for each survey.
+
+```{r}
+fs9 <- plot_grid(plot_grid(subtr_9_13$tr_survey + theme(legend.position = 'none') + labs(title = 'Survey 13') + geom_treescale(y = 1) + theme(plot.title = element_text(hjust = 0.5)),
+                    subtr_9_301$tr_survey + theme(legend.position = 'none') + labs(title = 'Survey 13-1') + geom_treescale(x = 0.000008, y = 5) + theme(plot.title = element_text(hjust = 0.5)),
+                    subtr_9_302$tr_survey + theme(legend.position = 'none') + labs(title = 'Survey 13-2') + geom_treescale(x = 0.000001, y = 12) + theme(plot.title = element_text(hjust = 0.5)),
+                    subtr_9_303$tr_survey + theme(legend.position = 'none') + labs(title = 'Survey 13-3') + geom_treescale(x = 0.000015, y = 10) + theme(plot.title = element_text(hjust = 0.5))),
+          get_legend(f4_1))
+fs9
+```
+
+```{r}
+ggsave('figures/FigS7.pdf', fs9, width = 7, height = 7)
+```
+
+### LOS of different facilities.
+
+```{r}
+s10a <- dat %>% mutate(survey = ifelse(survey == '301', '13-1', survey),
+         survey = ifelse(survey == '302', '13-2', survey),
+         survey = ifelse(survey == '303', '13-3', survey),
+         survey = as.factor(survey),
+         f_id = gsub('_.*','',f_id),
+         factype = gsub('V','v',toupper(factype))) %>% 
+  ggplot(aes(x = factype, y = as.numeric(facility_day))) + geom_violin() + scale_y_log10() +
+  labs(x = '', y = 'Length of stay')
+
+s10b <- dat %>% mutate(survey = ifelse(survey == '301', '13-1', survey),
+         survey = ifelse(survey == '302', '13-2', survey),
+         survey = ifelse(survey == '303', '13-3', survey),
+         survey = as.factor(survey),
+         f_id = gsub('_.*','',f_id)) %>% 
+  filter(factype == 'vsnf') %>% 
+  ggplot(aes(x = f_id, y = as.numeric(facility_day))) + geom_boxplot() +
+  labs(x = 'vSNF', y = 'Length of stay') #+ scale_y_log10()
+
+dat %>% mutate(survey = ifelse(survey == '301', '13-1', survey),
+         survey = ifelse(survey == '302', '13-2', survey),
+         survey = ifelse(survey == '303', '13-3', survey),
+         survey = as.factor(survey),
+         f_id = gsub('_.*','',f_id)) %>%
+  filter(factype == 'vsnf') %>% 
+  group_by(f_id) %>% summarize(median_los=median(as.numeric(facility_day), na.rm = T)) %>% 
+    dplyr::select(f_id, median_los) %>% deframe()
+
+s10 <- plot_grid(s10a, s10b)
+s10
+```
+
+```{r}
+# ggsave('figures/FigS10.pdf', s10, width = 10, height = 6)
+```
+
+
+### SNV distances separated by pair type
+
+```{r}
+all_snvs$ftypes <- sapply(1:nrow(all_snvs), function(x) gsub('V','v',toupper(paste0(sort(c(gsub('.*_','',all_snvs$loc1[x]),gsub('.*_','',all_snvs$loc2[x]))),collapse='-'))))
+# all_snvs$loc1 <- gsub('_.*','',all_snvs$loc1)
+# all_snvs$loc2 <- gsub('_.*','',all_snvs$loc2)
+
+fs11_1 <- all_snvs %>% ggplot(aes(x=Freq, fill=intra)) + geom_histogram(position="identity",bins=30) + facet_grid(ftypes~survey) + labs(x='Pairwise SNV distance', y='\nCount',fill='') + scale_fill_manual(values = c('Inter-facility pair'=adjustcolor('darkslategray3',alpha.f=0.5),'Intra-facility pair'=adjustcolor('lightsalmon',alpha.f=0.5))) 
+fills <- c('13'=adjustcolor('tan1',alpha.f = 0.5), '13-1'=adjustcolor('#bdc9e1',alpha.f = 0.5), '13-2'=adjustcolor('#67a9cf',alpha.f = 0.5), '13-3'=adjustcolor('#02818a',alpha.f = 0.5))
+fs11 <- plot_panel_cols(fs11_1, fills)
+fs11 
+```
+
+```{r}
+ggsave('figures/FigS8.pdf', fs11, width = 11, height = 7)
+```
+
+
+### Patient flow for SNV threshold.
+
+```{r}
+snvs_sub <- all_snvs %>% filter(loc1 != loc2 & pt1 != pt2) %>% 
+  mutate(lt20 = ifelse(Freq <= 12, '≤12','>12'))
+snvs_sub$ftypes <- sapply(1:nrow(snvs_sub), function(x) gsub('V','v',toupper(paste0(sort(c(gsub('.*_','',snvs_sub$loc1[x]),gsub('.*_','',snvs_sub$loc2[x]))),collapse='-'))))
+snvs_sub$loc1 <- gsub('_.*','',snvs_sub$loc1)
+snvs_sub$loc2 <- gsub('_.*','',snvs_sub$loc2)
+snvs_sub$pt_flow <- sapply(1:nrow(snvs_sub), function(x){
+  pt_flow[snvs_sub$loc1[x], snvs_sub$loc2[x]]
+})
+
+pvals <- bind_cols(survey=unique(snvs_sub$survey), sapply(unique(snvs_sub$ftypes),function(i){
+  sapply(unique(snvs_sub$survey), function(j){
+    pt_flow_sub <- snvs_sub$pt_flow[snvs_sub$ftypes == i & snvs_sub$survey == j]
+    lt_sub <- snvs_sub$lt20[snvs_sub$ftypes == i & snvs_sub$survey == j]
+    if(length(unique(lt_sub)) == 2){
+      wt <- wilcox.test(pt_flow_sub~lt_sub, exact = F)
+      wt$p.value
+    }else{
+      NaN
+    }
+  })
+})) 
+pvals_long <- pvals %>% pivot_longer(c(`LTACH-LTACH`,`LTACH-vSNF`,`vSNF-vSNF`), names_to = 'ftypes') %>% mutate(padj = signif(p.adjust(value, method ='bonf'),1))
+
+pdat <- full_join(snvs_sub, pvals_long) %>% filter(!duplicated(paste(survey, ftypes, lt20))) %>% 
+  mutate(padj = ifelse(lt20 == '>12' & !is.nan(padj), paste('p =',padj,'              '), NA),
+         lt20 = ifelse(lt20 == '≤12',"\u226412",lt20)
+         )
+
+sf <- snvs_sub %>% #mutate(lt20 = ifelse(lt20 == '≤12', '<=12',lt20)) %>% 
+  mutate(lt20 = ifelse(lt20 == '≤12', "\u226412",lt20),
+         lt20 = factor(lt20, levels = c("\u226412", '>12'))) %>% 
+  ggplot(aes(x = lt20, y = pt_flow)) + facet_grid(ftypes~survey) + 
+  geom_jitter(alpha=0.2) +
+geom_violin(alpha=0.5) + labs(x = 'Pairwise SNV distance', y = 'Patient flow') + theme(axis.text.x = element_text(angle = 0, hjust = 0.5, vjust = 0.5)) + scale_y_log10(limits = c(1e-6,1e0)) + geom_text(data = pdat, aes(x = lt20, y = 0.5, label = padj), size = 4)
+
+fills <- c('13'=adjustcolor('tan1',alpha.f = 0.5), '301'=adjustcolor('#bdc9e1',alpha.f = 0.5), '302'=adjustcolor('#67a9cf',alpha.f = 0.5), '303'=adjustcolor('#02818a',alpha.f = 0.5))
+snvs_flow <- plot_panel_cols(sf, fills)
+snvs_flow 
+```
+
+```{r}
+ggsave('figures/FigS9.pdf', snvs_flow, width = 9, height = 7)
+```
+
+
+
