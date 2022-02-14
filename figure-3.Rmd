@@ -1,0 +1,91 @@
+---
+title: "NDM Figure 3"
+author: "Zena Lapp"
+date: "2/14/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+```{r}
+## load packages
+library(tidyverse) # to read in and clean data
+library(ape) # to read in tree
+library(ggtree) # to plot tree
+library(ggnewscale) # to be able to plot 2 heatmaps with 2 legends
+```
+
+
+```{r}
+## load relevant data
+
+# read in and clean up metadata
+metadat <- read_csv('supplemental_data/public_isolate_metadata.csv') %>% 
+  mutate(Region = ifelse(grepl('REALM', gID), 'Chicago area', Region),
+         NDM=ifelse(grepl('NDM',NDM),'NDM',NDM),
+         KPC=ifelse(grepl('KPC',KPC),'KPC',KPC),
+         IncF_plasmid = ifelse('Present', 'IncF plasmid', ' '),
+         IncF_plasmid=factor(IncF_plasmid, levels = c('IncF plasmid', ' ')),
+                 NDM=factor(NDM, levels = c('NDM', ' ')),
+                 KPC=factor(KPC, levels = c('KPC', ' '))) %>% 
+  filter(!is.na(Region)) %>% 
+  select(gID, Region, NDM, KPC, IncF_plasmid) %>% 
+  data.frame() %>% 
+  rename('IncF plasmid'=IncF_plasmid)
+rownames(metadat) <- metadat$gID
+
+# read in tree
+tr <- read.tree('genomic_data/st147.tree')
+# remove long branches from tree for visualization purposes
+long_branches <- c('573.9788', '573.32158', '573.32159', '573.32155') 
+tr <- drop.tip(tr,long_branches)
+# remove tips with no location inforamation
+tr <- keep.tip(tr, rownames(metadat)[rownames(metadat) %in% tr$tip.label])
+```
+
+```{r}
+## prepare colors for plot
+region_colors <- c(`Australia and New Zealand` = "#e6194b", `Eastern Asia` = "#3cb44b", 
+                   `Eastern Europe` = "#ffe119", `Latin America and the Caribbean` = "#4363d8", 
+                   `Northern Africa` = "#f58231", `Northern America` = "#911eb4", 
+                   `Northern Europe` = "#46f0f0", `South-eastern Asia` = "#f032e6", 
+                   `Southern Asia` = "#bcf60c", `Southern Europe` = "#fabebe", `Sub-Saharan Africa` = "#008080", 
+                   `Western Asia` = "#e6beff", `Western Europe` = "#9a6324", `Chicago area`="#800000")
+genomic_colors <- c(NDM="dodgerblue3", KPC="darkgrey", 'IncF plasmid'='black',' '='white')
+```
+
+```{r}
+## need to separate genomic and region data for plotting purposes
+# get location data
+region_dat <- metadat[,'Region',drop=F]
+# get genomic data 
+genomic_dat <- metadat[,c('IncF plasmid','NDM','KPC')]
+```
+
+
+```{r}
+# plot tree and scale (substitutions per site per year)
+p_tr <- ggtree(tr, layout = 'fan') + geom_treescale(x=0.00005,offset=0,fontsize = 3)
+
+# layer on heatmap of region
+gh_tr <- gheatmap(p_tr, region_dat, width = 0.25/3, color = NA, 
+                  colnames_position = 'top', colnames_angle = 45, colnames_offset_y = 25, 
+                  colnames = F, colnames_offset_x = 0.000002, font.size = 3) + 
+  scale_fill_manual(values = region_colors, na.value='whitesmoke') + 
+  ylim(c(0,540)) + labs(fill='Region')
+
+# layer on heatmap of genomic data
+f3 <- gheatmap(gh_tr + new_scale_fill(), genomic_dat, 
+               width = 0.25, color = NA, offset = 0.000005, colnames = F, font.size = 3) +
+  scale_fill_manual(values = genomic_colors, na.value='whitesmoke', breaks = c('IncF plasmid','NDM','KPC'))  + 
+  labs(fill = 'Genomic element') + 
+  theme(text=element_text(size=15))
+f3
+```
+
+```{r, eval = FALSE}
+# you can save the figure like this
+ggsave(plot = f3, filename = 'figures/Fig3.png', width = 10, height = 6)
+```
